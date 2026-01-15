@@ -1,0 +1,526 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Live Speech Analytics (Browser)</title>
+  <style>
+    body { margin: 0; font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; background: #0f1115; color: #e8e8ea; }
+    header { padding: 16px 18px; border-bottom: 1px solid #232633; display: flex; gap: 12px; align-items: center; justify-content: space-between; }
+    .title { font-weight: 700; letter-spacing: 0.2px; }
+    .btns { display: flex; gap: 10px; flex-wrap: wrap; }
+    button {
+      background: #2a2f45; color: #fff; border: 1px solid #3a4264;
+      padding: 10px 12px; border-radius: 10px; cursor: pointer; font-weight: 600;
+    }
+    button:disabled { opacity: 0.5; cursor: not-allowed; }
+    main { padding: 16px 18px; display: grid; grid-template-columns: 360px 1fr; gap: 16px; }
+    @media (max-width: 920px) { main { grid-template-columns: 1fr; } }
+    .card { background: #151826; border: 1px solid #232633; border-radius: 14px; padding: 14px; }
+    .card h2 { margin: 0 0 10px; font-size: 14px; opacity: 0.9; }
+    .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+    .metric { background: #101321; border: 1px solid #232633; border-radius: 12px; padding: 10px; }
+    .metric .k { font-size: 12px; opacity: 0.8; }
+    .metric .v { font-size: 18px; font-weight: 800; margin-top: 4px; }
+    .metric .s { font-size: 12px; opacity: 0.8; margin-top: 2px; }
+    .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+    .pill { padding: 6px 10px; border-radius: 999px; background: #0f1322; border: 1px solid #232633; font-size: 12px; opacity: 0.95; }
+    textarea {
+      width: 100%; min-height: 220px; resize: vertical; border-radius: 12px;
+      border: 1px solid #232633; background: #0f1322; color: #e8e8ea; padding: 12px;
+      line-height: 1.35;
+    }
+    canvas { width: 100%; height: 140px; background: #0f1322; border: 1px solid #232633; border-radius: 12px; display: block; }
+    .hint { font-size: 12px; opacity: 0.8; line-height: 1.35; }
+    a { color: #a7c6ff; }
+  </style>
+</head>
+
+<body>
+<header>
+  <div class="title">Live Speech Analytics</div>
+  <div class="btns">
+    <button id="startBtn">Start Live</button>
+    <button id="stopBtn" disabled>Stop</button>
+    <button id="resetBtn">Reset</button>
+  </div>
+</header>
+
+<main>
+  <section class="card">
+    <h2>Status</h2>
+    <div class="row" style="margin-bottom: 10px;">
+      <div class="pill" id="statusPill">Idle</div>
+      <div class="pill" id="backendPill">Mic: off</div>
+      <div class="pill" id="asrPill">ASR: unknown</div>
+    </div>
+    <div class="hint">
+      Best in Chrome or Edge. If transcription does not start, your browser may not support the Web Speech API.
+      Pitch and loudness still work with mic permission.
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>Live Transcript</h2>
+    <textarea id="transcript" placeholder="Transcript will appear here..."></textarea>
+    <div class="row" style="margin-top: 10px;">
+      <div class="pill">Tip: speak clearly, and keep this tab active.</div>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>Metrics</h2>
+    <div class="grid">
+      <div class="metric"><div class="k">Word count</div><div class="v" id="wordCount">0</div><div class="s" id="uniqueWords">0 unique</div></div>
+      <div class="metric"><div class="k">Speech rate</div><div class="v" id="wpm">0</div><div class="s">words / min</div></div>
+
+      <div class="metric"><div class="k">Filler words</div><div class="v" id="fillers">0</div><div class="s" id="fillerList">um, uh, like…</div></div>
+      <div class="metric"><div class="k">Pauses</div><div class="v" id="pauses">0</div><div class="s">pause &gt; 0.7s</div></div>
+
+      <div class="metric"><div class="k">Speech time</div><div class="v" id="speechTime">0.0s</div><div class="s">voice detected</div></div>
+      <div class="metric"><div class="k">Silence time</div><div class="v" id="silenceTime">0.0s</div><div class="s">below threshold</div></div>
+
+      <div class="metric"><div class="k">Speech ratio</div><div class="v" id="speechRatio">0%</div><div class="s">speech / total</div></div>
+      <div class="metric"><div class="k">Loudness</div><div class="v" id="loudness">0</div><div class="s">RMS</div></div>
+
+      <div class="metric"><div class="k">Pitch</div><div class="v" id="pitch">--</div><div class="s">Hz estimate</div></div>
+      <div class="metric"><div class="k">Longest pause</div><div class="v" id="longestPause">0.0s</div><div class="s">max</div></div>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>Waveform</h2>
+    <canvas id="wave" width="1200" height="280"></canvas>
+    <div class="hint" style="margin-top: 10px;">
+      Voice activity is estimated by loudness (RMS). Pause counting is based on transitions from voice to silence.
+      Pitch is a simple autocorrelation estimate and can be noisy.
+    </div>
+  </section>
+</main>
+
+<script>
+  // UI
+  const startBtn = document.getElementById('startBtn');
+  const stopBtn  = document.getElementById('stopBtn');
+  const resetBtn = document.getElementById('resetBtn');
+
+  const statusPill  = document.getElementById('statusPill');
+  const backendPill = document.getElementById('backendPill');
+  const asrPill     = document.getElementById('asrPill');
+
+  const transcriptEl = document.getElementById('transcript');
+
+  const wordCountEl   = document.getElementById('wordCount');
+  const uniqueWordsEl = document.getElementById('uniqueWords');
+  const wpmEl         = document.getElementById('wpm');
+  const fillersEl     = document.getElementById('fillers');
+  const pausesEl      = document.getElementById('pauses');
+  const speechTimeEl  = document.getElementById('speechTime');
+  const silenceTimeEl = document.getElementById('silenceTime');
+  const speechRatioEl = document.getElementById('speechRatio');
+  const loudnessEl    = document.getElementById('loudness');
+  const pitchEl       = document.getElementById('pitch');
+  const longestPauseEl = document.getElementById('longestPause');
+
+  const canvas = document.getElementById('wave');
+  const ctx = canvas.getContext('2d');
+
+  // Speech recognition
+  const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+  let recognizer = null;
+
+  // Audio
+  let audioCtx = null;
+  let analyser = null;
+  let micStream = null;
+  let sourceNode = null;
+  let timeData = null;
+
+  // State
+  let running = false;
+  let startedAt = 0;
+  let lastTick = 0;
+
+  // Voice activity + pauses
+  let isVoicing = false;
+  let voiceStart = null;
+  let silenceStart = null;
+  let pauseCount = 0;
+  let longestPause = 0;
+
+  let speechTime = 0;
+  let silenceTime = 0;
+
+  // Transcript + text analytics
+  let finalTranscript = '';
+  let interimTranscript = '';
+
+  const fillerWords = new Set(['um','uh','erm','ah','like','you know','so','actually','basically','literally','right']);
+  const pauseThresholdSec = 0.7;
+
+  // Voice activity threshold, tweak if needed
+  let rmsThreshold = 0.02;
+
+  function setStatus(text) {
+    statusPill.textContent = text;
+  }
+
+  function formatSec(s) {
+    return (Math.max(0, s)).toFixed(1) + 's';
+  }
+
+  function tokenize(text) {
+    return text
+      .toLowerCase()
+      .replace(/[\u2019']/g, "'")
+      .replace(/[^a-z0-9'\s]+/g, ' ')
+      .split(/\s+/)
+      .filter(Boolean);
+  }
+
+  function countFillers(text) {
+    // Includes multi-word filler "you know"
+    const t = text.toLowerCase();
+    let count = 0;
+
+    for (const f of fillerWords) {
+      if (f.includes(' ')) {
+        const re = new RegExp('\\b' + f.replace(/\s+/g, '\\s+') + '\\b', 'g');
+        const m = t.match(re);
+        if (m) count += m.length;
+      }
+    }
+
+    const singleTokens = tokenize(t);
+    for (const tok of singleTokens) {
+      if (fillerWords.has(tok)) count += 1;
+    }
+
+    return count;
+  }
+
+  function updateTextMetrics() {
+    const text = finalTranscript.trim();
+    const tokens = tokenize(text);
+    const wc = tokens.length;
+
+    const uniq = new Set(tokens);
+    const elapsedMin = running ? ((performance.now() - startedAt) / 60000) : 0;
+    const wpm = elapsedMin > 0 ? (wc / elapsedMin) : 0;
+
+    wordCountEl.textContent = wc.toString();
+    uniqueWordsEl.textContent = `${uniq.size} unique`;
+    wpmEl.textContent = Math.round(wpm).toString();
+
+    fillersEl.textContent = countFillers(text).toString();
+  }
+
+  function updateTimeMetrics() {
+    speechTimeEl.textContent = formatSec(speechTime);
+    silenceTimeEl.textContent = formatSec(silenceTime);
+
+    const total = speechTime + silenceTime;
+    const ratio = total > 0 ? (speechTime / total) : 0;
+    speechRatioEl.textContent = Math.round(ratio * 100) + '%';
+
+    pausesEl.textContent = pauseCount.toString();
+    longestPauseEl.textContent = formatSec(longestPause);
+  }
+
+  function drawWaveform() {
+    if (!analyser || !timeData) return;
+    analyser.getFloatTimeDomainData(timeData);
+
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    // midline
+    ctx.globalAlpha = 0.35;
+    ctx.beginPath();
+    ctx.moveTo(0, canvas.height / 2);
+    ctx.lineTo(canvas.width, canvas.height / 2);
+    ctx.stroke();
+    ctx.globalAlpha = 1;
+
+    ctx.beginPath();
+    const step = canvas.width / timeData.length;
+    let x = 0;
+    for (let i = 0; i < timeData.length; i++) {
+      const y = (0.5 - timeData[i] / 2) * canvas.height;
+      if (i === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+      x += step;
+    }
+    ctx.stroke();
+  }
+
+  function computeRms(buf) {
+    let sum = 0;
+    for (let i = 0; i < buf.length; i++) {
+      const v = buf[i];
+      sum += v * v;
+    }
+    return Math.sqrt(sum / buf.length);
+  }
+
+  // Simple autocorrelation pitch estimate
+  function estimatePitch(sampleRate, buf) {
+    // Avoid calculating pitch during near-silence
+    const rms = computeRms(buf);
+    if (rms < rmsThreshold * 0.8) return null;
+
+    const SIZE = buf.length;
+    const MIN_F = 80;   // Hz
+    const MAX_F = 400;  // Hz
+    const minLag = Math.floor(sampleRate / MAX_F);
+    const maxLag = Math.floor(sampleRate / MIN_F);
+
+    let bestLag = -1;
+    let bestCorr = 0;
+
+    for (let lag = minLag; lag <= maxLag; lag++) {
+      let corr = 0;
+      for (let i = 0; i < SIZE - lag; i++) {
+        corr += buf[i] * buf[i + lag];
+      }
+      if (corr > bestCorr) {
+        bestCorr = corr;
+        bestLag = lag;
+      }
+    }
+
+    if (bestLag === -1) return null;
+    const freq = sampleRate / bestLag;
+    if (!isFinite(freq) || freq < MIN_F || freq > MAX_F) return null;
+    return freq;
+  }
+
+  function tick(now) {
+    if (!running) return;
+
+    const dt = (now - lastTick) / 1000;
+    lastTick = now;
+
+    drawWaveform();
+
+    if (analyser && timeData) {
+      analyser.getFloatTimeDomainData(timeData);
+      const rms = computeRms(timeData);
+      loudnessEl.textContent = rms.toFixed(3);
+
+      const pitchHz = estimatePitch(audioCtx.sampleRate, timeData);
+      pitchEl.textContent = pitchHz ? Math.round(pitchHz).toString() : '--';
+
+      // Voice activity detection
+      const voiced = rms >= rmsThreshold;
+
+      if (voiced) {
+        speechTime += dt;
+
+        if (!isVoicing) {
+          // Transition: silence -> voice, close a pause
+          if (silenceStart != null) {
+            const pauseDur = (now - silenceStart) / 1000;
+            if (pauseDur >= pauseThresholdSec) {
+              pauseCount += 1;
+              longestPause = Math.max(longestPause, pauseDur);
+            }
+          }
+          voiceStart = now;
+          silenceStart = null;
+        }
+      } else {
+        silenceTime += dt;
+
+        if (isVoicing) {
+          // Transition: voice -> silence, start tracking a pause
+          silenceStart = now;
+          voiceStart = null;
+        }
+      }
+
+      isVoicing = voiced;
+      updateTimeMetrics();
+    }
+
+    // Update transcript live display
+    transcriptEl.value = (finalTranscript + (interimTranscript ? (' ' + interimTranscript) : '')).trim();
+    updateTextMetrics();
+
+    requestAnimationFrame(tick);
+  }
+
+  async function startAudio() {
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    micStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+    sourceNode = audioCtx.createMediaStreamSource(micStream);
+
+    analyser = audioCtx.createAnalyser();
+    analyser.fftSize = 2048;
+
+    sourceNode.connect(analyser);
+    timeData = new Float32Array(analyser.fftSize);
+
+    backendPill.textContent = 'Mic: on';
+  }
+
+  function stopAudio() {
+    if (micStream) {
+      for (const track of micStream.getTracks()) track.stop();
+      micStream = null;
+    }
+    if (audioCtx) {
+      audioCtx.close();
+      audioCtx = null;
+    }
+    analyser = null;
+    sourceNode = null;
+    timeData = null;
+    backendPill.textContent = 'Mic: off';
+  }
+
+  function startASR() {
+    if (!SpeechRecognition) {
+      asrPill.textContent = 'ASR: unsupported';
+      return;
+    }
+
+    recognizer = new SpeechRecognition();
+    recognizer.continuous = true;
+    recognizer.interimResults = true;
+
+    // Let the browser pick language, or set it explicitly:
+    // recognizer.lang = 'en-US';
+
+    recognizer.onstart = () => {
+      asrPill.textContent = 'ASR: listening';
+    };
+
+    recognizer.onerror = (e) => {
+      console.warn('ASR error:', e);
+      asrPill.textContent = 'ASR: error';
+    };
+
+    recognizer.onend = () => {
+      // Some browsers stop automatically, restart if still running
+      asrPill.textContent = running ? 'ASR: restarting' : 'ASR: stopped';
+      if (running) {
+        try { recognizer.start(); } catch { /* ignore */ }
+      }
+    };
+
+    recognizer.onresult = (event) => {
+      let interim = '';
+      for (let i = event.resultIndex; i < event.results.length; i++) {
+        const res = event.results[i];
+        const txt = res[0].transcript;
+        if (res.isFinal) finalTranscript += ' ' + txt;
+        else interim += ' ' + txt;
+      }
+      interimTranscript = interim.trim();
+      finalTranscript = finalTranscript.replace(/\s+/g, ' ').trim();
+    };
+
+    try {
+      recognizer.start();
+    } catch (e) {
+      console.warn('ASR start failed:', e);
+      asrPill.textContent = 'ASR: blocked';
+    }
+  }
+
+  function stopASR() {
+    if (recognizer) {
+      try { recognizer.onend = null; recognizer.stop(); } catch { /* ignore */ }
+      recognizer = null;
+    }
+    asrPill.textContent = SpeechRecognition ? 'ASR: stopped' : 'ASR: unsupported';
+  }
+
+  function resetAll() {
+    finalTranscript = '';
+    interimTranscript = '';
+    transcriptEl.value = '';
+
+    isVoicing = false;
+    voiceStart = null;
+    silenceStart = null;
+
+    pauseCount = 0;
+    longestPause = 0;
+    speechTime = 0;
+    silenceTime = 0;
+
+    wordCountEl.textContent = '0';
+    uniqueWordsEl.textContent = '0 unique';
+    wpmEl.textContent = '0';
+    fillersEl.textContent = '0';
+    pausesEl.textContent = '0';
+    speechTimeEl.textContent = '0.0s';
+    silenceTimeEl.textContent = '0.0s';
+    speechRatioEl.textContent = '0%';
+    loudnessEl.textContent = '0';
+    pitchEl.textContent = '--';
+    longestPauseEl.textContent = '0.0s';
+
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+  }
+
+  async function start() {
+    if (running) return;
+    running = true;
+
+    startBtn.disabled = true;
+    stopBtn.disabled = false;
+
+    setStatus('Running');
+    startedAt = performance.now();
+    lastTick = startedAt;
+
+    await startAudio();
+    startASR();
+
+    requestAnimationFrame(tick);
+  }
+
+  function stop() {
+    if (!running) return;
+    running = false;
+
+    startBtn.disabled = false;
+    stopBtn.disabled = true;
+
+    setStatus('Stopped');
+
+    stopASR();
+    stopAudio();
+
+    // Render final transcript
+    interimTranscript = '';
+    transcriptEl.value = finalTranscript;
+    updateTextMetrics();
+    updateTimeMetrics();
+  }
+
+  startBtn.addEventListener('click', () => start().catch(err => {
+    console.error(err);
+    setStatus('Error: ' + err.message);
+    startBtn.disabled = false;
+    stopBtn.disabled = true;
+  }));
+
+  stopBtn.addEventListener('click', stop);
+  resetBtn.addEventListener('click', () => {
+    if (running) stop();
+    resetAll();
+    setStatus('Idle');
+  });
+
+  // Initial UI
+  setStatus('Idle');
+  backendPill.textContent = 'Mic: off';
+  asrPill.textContent = SpeechRecognition ? 'ASR: ready' : 'ASR: unsupported';
+  resetAll();
+</script>
+
+</body>
+</html>
